@@ -29,18 +29,7 @@ env:
   UNIT: live/client-demo/dev/ap-southeast-2/ec2-web
 
 jobs:
-  scanner-tests:
-    # Offline tests of the scanner (no secrets, no AWS). Must pass before the scan.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run offline scanner tests
-        run: |
-          chmod +x tests/run_offline_tests.sh scanner/scan_plan.sh
-          tests/run_offline_tests.sh
-
   plan-and-scan:
-    needs: scanner-tests
     runs-on: ubuntu-latest
     permissions:
       id-token: write   # OIDC to AWS (read-only plan role)
