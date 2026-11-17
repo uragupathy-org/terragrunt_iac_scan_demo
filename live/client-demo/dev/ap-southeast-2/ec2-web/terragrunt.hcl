@@ -1,5 +1,5 @@
 # Unit: client environment "dev" in ap-southeast-2, EC2 web instance.
-# Layers: client repo (this file) -> product (products/web-tier) -> modules.
+# Layers: client repo (this file) -> product (products/web-tier, flat: resources declared directly).
 
 include "root" {
   path = find_in_parent_folders("root.hcl")
@@ -11,7 +11,7 @@ locals {
 }
 
 terraform {
-  # Copy the whole repo so the product can reference ../../modules.
+  # Copy the whole repo so the product path resolves.
   source = "${get_repo_root()}//products/web-tier"
 }
 

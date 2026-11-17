@@ -7,3 +7,5 @@ tfplan
 plan.json
 scan-output/
 .env
+rendered/
+*.zip

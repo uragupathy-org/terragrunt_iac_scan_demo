@@ -5,7 +5,6 @@ on:
     paths:
       - "live/**"
       - "products/**"
-      - "modules/**"
       - "scanner/**"
       - ".github/workflows/iac-scan.yml"
   workflow_dispatch:
@@ -19,7 +18,7 @@ env:
   TERRAFORM_VERSION: "1.12.1"
   TERRAGRUNT_VERSION: "1.2.1"
   VISION_ONE_BASE_URL: https://api.au.xdr.trendmicro.com
-  SCAN_THRESHOLD: HIGH
+  SCAN_THRESHOLD: MEDIUM
 
 jobs:
   discover:
@@ -66,33 +65,38 @@ jobs:
           chmod +x /usr/local/bin/terragrunt
           terragrunt --version
 
-      - name: Render plan (Terragrunt)
-        id: plan
-        working-directory: ${{ matrix.unit }}
-        env:
-          TG_NON_INTERACTIVE: "true"
+      - name: Render Terragrunt unit to Terraform and plan
         run: |
-          terragrunt init -input=false
-          terragrunt plan -input=false -lock=false -out=tfplan
-          terragrunt show -json tfplan > "$RUNNER_TEMP/plan.json"
-          # Keep the plan out of the artifact store; only the report is kept.
-          echo "plan_json=$RUNNER_TEMP/plan.json" >> "$GITHUB_OUTPUT"
+          chmod +x scripts/render_and_plan.sh
+          scripts/render_and_plan.sh "${{ matrix.unit }}" "$RUNNER_TEMP/rendered"
+          echo "RENDERED_DIR=$RUNNER_TEMP/rendered/${{ matrix.unit }}" >> "$GITHUB_ENV"
 
-      - name: Scan rendered plan with Vision One
+      - name: Scan rendered plan (JSON) with Vision One
         env:
           VISION_ONE_API_KEY: ${{ secrets.VISION_ONE_API_KEY }}
         run: |
           chmod +x scanner/scan_plan.sh
           scanner/scan_plan.sh \
-            --plan-json "$RUNNER_TEMP/plan.json" \
-            --out-dir "$RUNNER_TEMP/scan-report" \
+            --plan-json "$RENDERED_DIR/plan.json" \
+            --out-dir "$RUNNER_TEMP/scan/plan" \
             --threshold "$SCAN_THRESHOLD"
 
-      - name: Upload scan report
+      - name: Scan rendered HCL (archive) with Vision One
+        if: always()
+        env:
+          VISION_ONE_API_KEY: ${{ secrets.VISION_ONE_API_KEY }}
+        run: |
+          scanner/scan_plan.sh \
+            --archive "$RENDERED_DIR/rendered-tf.zip" \
+            --out-dir "$RUNNER_TEMP/scan/archive" \
+            --threshold "$SCAN_THRESHOLD"
+
+      - name: Upload scan reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: scan-report-${{ strategy.job-index }}
-          path: ${{ runner.temp }}/scan-report/
+          # Reports only. Plan JSON and tfplan are never uploaded.
+          name: scan-reports-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/scan/
           retention-days: 7
           if-no-files-found: ignore
