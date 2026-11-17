@@ -8,25 +8,32 @@
 #                      POST /beta/cloudPosture/scanTemplateArchive (type: terraform-archive)
 #
 # Usage:
-#   scan_plan.sh (--plan-json FILE | --archive FILE) --out-dir DIR [--threshold MEDIUM] [--dry-run]
+#   scan_plan.sh (--plan-json FILE | --archive FILE) --out-dir DIR
+#                [--threshold MEDIUM] [--allowlist FILE] [--dry-run]
 #
 # Env:
 #   VISION_ONE_API_KEY   required unless --dry-run
 #   VISION_ONE_BASE_URL  default https://api.au.xdr.trendmicro.com
 #
-# Exit codes: 0 = pass, 1 = findings at/above threshold, 2 = usage/API error.
+# Allowlist: findings matching ruleId + resource are accepted, listed in the
+# report with their reason, and do not count toward the gate.
+#
+# Exit codes: 0 = pass, 1 = unaccepted findings at/above threshold,
+#             2 = usage, API, or allowlist error (including zero results).
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLAN_JSON=""
 ARCHIVE=""
 OUT_DIR=""
 THRESHOLD="MEDIUM"
+ALLOWLIST="$SCRIPT_DIR/allowlist.json"
 DRY_RUN="false"
 BASE_URL="${VISION_ONE_BASE_URL:-https://api.au.xdr.trendmicro.com}"
 MAX_CHARS=9000000   # API limit on "content" for scanTemplate.
 
-usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,6 +41,7 @@ while [[ $# -gt 0 ]]; do
     --archive)   ARCHIVE="$2"; shift 2 ;;
     --out-dir)   OUT_DIR="$2"; shift 2 ;;
     --threshold) THRESHOLD="$(echo "$2" | tr '[:lower:]' '[:upper:]')"; shift 2 ;;
+    --allowlist) ALLOWLIST="$2"; shift 2 ;;
     --dry-run)   DRY_RUN="true"; shift ;;
     -h|--help)   usage ;;
     *) echo "Unknown argument: $1" >&2; usage ;;
@@ -48,7 +56,6 @@ fi
 INPUT="${PLAN_JSON:-$ARCHIVE}"
 [[ -f "$INPUT" ]] || { echo "Input file not found: $INPUT" >&2; exit 2; }
 
-# Severity ranking. Matches the API riskLevel enum.
 rank() {
   case "$1" in
     LOW) echo 1 ;; MEDIUM) echo 2 ;; HIGH) echo 3 ;; VERY_HIGH) echo 4 ;; EXTREME) echo 5 ;;
@@ -58,8 +65,13 @@ rank() {
 THRESHOLD_RANK="$(rank "$THRESHOLD")"
 [[ "$THRESHOLD_RANK" -gt 0 ]] || { echo "--threshold must be LOW|MEDIUM|HIGH|VERY_HIGH|EXTREME" >&2; exit 2; }
 
+[[ -f "$ALLOWLIST" ]] || { echo "Allowlist not found: $ALLOWLIST" >&2; exit 2; }
+jq -e 'type == "array" and all(.[]; (.ruleId|type=="string") and (.resource|type=="string") and ((.reason // "")|length > 0))' \
+  "$ALLOWLIST" >/dev/null || { echo "Allowlist must be an array of {ruleId, resource, reason} with a non-empty reason" >&2; exit 2; }
+
 mkdir -p "$OUT_DIR"
 RESPONSE="$OUT_DIR/response.json"
+FINDINGS="$OUT_DIR/findings.json"
 REPORT_MD="$OUT_DIR/report.md"
 
 if [[ -n "$PLAN_JSON" ]]; then
@@ -102,14 +114,22 @@ if [[ "$HTTP_CODE" != "200" ]]; then
   exit 2
 fi
 
-# Findings = FAILURE results that are not ignored; blocking = findings at/above threshold.
-FAILED="$(jq '[.scanResults[] | select(.status == "FAILURE" and (.ignored | not))] | length' "$RESPONSE")"
 TOTAL="$(jq '.scanResults | length' "$RESPONSE")"
+
+# Failing results (FAILURE and not ignored), each with its allowlist entry if accepted.
+jq --slurpfile allow "$ALLOWLIST" '
+  ($allow[0]) as $a
+  | [ .scanResults[]
+      | select(.status == "FAILURE" and (.ignored | not))
+      | . as $f
+      | ([$a[] | select(.ruleId == $f.ruleId and .resource == $f.resource)] | .[0]) as $acc
+      | $f + {accepted: $acc} ]' "$RESPONSE" > "$FINDINGS"
+
+FAILED="$(jq 'length' "$FINDINGS")"
+ACCEPTED="$(jq '[.[] | select(.accepted != null)] | length' "$FINDINGS")"
 BLOCKING="$(jq --arg t "$THRESHOLD" '
   def rank: {"LOW":1,"MEDIUM":2,"HIGH":3,"VERY_HIGH":4,"EXTREME":5}[.] // 0;
-  [.scanResults[]
-   | select(.status == "FAILURE" and (.ignored | not))
-   | select(((.riskLevel // "") | rank) >= ($t | rank))] | length' "$RESPONSE")"
+  [ .[] | select(.accepted == null and (((.riskLevel // "") | rank) >= ($t | rank))) ] | length' "$FINDINGS")"
 
 {
   echo "## Vision One Template Scan ($(basename "$INPUT"))"
@@ -117,14 +137,18 @@ BLOCKING="$(jq --arg t "$THRESHOLD" '
   echo "- Input: \`$(basename "$INPUT")\` ($SIZE_DESC)"
   echo "- Results returned: $TOTAL"
   echo "- Failing (not ignored): $FAILED"
+  echo "- Accepted by allowlist: $ACCEPTED"
   echo "- Blocking at threshold \`$THRESHOLD\`: $BLOCKING"
   echo ""
   if (( FAILED > 0 )); then
-    echo "| Risk | Rule | Resource | Title |"
-    echo "|------|------|----------|-------|"
-    jq -r '.scanResults[]
-      | select(.status == "FAILURE" and (.ignored | not))
-      | "| \(.riskLevel // "-") | \(.ruleId) | \(.resource) | \(.ruleTitle) |"' "$RESPONSE"
+    echo "| Risk | Rule | Resource | Title | Status |"
+    echo "|------|------|----------|-------|--------|"
+    jq -r '.[] | "| \(.riskLevel // "-") | \(.ruleId) | \(.resource) | \(.ruleTitle) | \(if .accepted then "accepted" else "BLOCKING candidate" end) |"' "$FINDINGS"
+    if (( ACCEPTED > 0 )); then
+      echo ""
+      echo "Accepted findings and reasons:"
+      jq -r '.[] | select(.accepted != null) | "- \(.ruleId) on \(.resource): \(.accepted.reason)"' "$FINDINGS"
+    fi
   else
     echo "No failing results."
   fi
@@ -142,8 +166,8 @@ if (( TOTAL == 0 )); then
 fi
 
 if (( BLOCKING > 0 )); then
-  echo "FAIL: $BLOCKING finding(s) at or above $THRESHOLD."
+  echo "FAIL: $BLOCKING unaccepted finding(s) at or above $THRESHOLD."
   exit 1
 fi
-echo "PASS: no findings at or above $THRESHOLD."
+echo "PASS: no unaccepted findings at or above $THRESHOLD."
 exit 0

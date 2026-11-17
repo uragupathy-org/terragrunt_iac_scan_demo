@@ -21,6 +21,16 @@ env:
   SCAN_THRESHOLD: MEDIUM
 
 jobs:
+  scanner-tests:
+    # Offline tests of the scanner gate (no secrets, no AWS). Must pass before scanning.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run offline scanner tests
+        run: |
+          chmod +x tests/run_offline_tests.sh scanner/scan_plan.sh
+          tests/run_offline_tests.sh
+
   discover:
     runs-on: ubuntu-latest
     outputs:
@@ -35,7 +45,7 @@ jobs:
           echo "Units: $units"
 
   plan-and-scan:
-    needs: discover
+    needs: [discover, scanner-tests]
     if: needs.discover.outputs.units != '[]'
     runs-on: ubuntu-latest
     strategy:

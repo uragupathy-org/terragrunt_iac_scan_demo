@@ -25,6 +25,14 @@ scanner/scan_plan.sh                                   scan plan JSON or HCL arc
 - Zero results from the API is an error (exit 2), never a pass.
 - Accepted findings (allowlist): not yet implemented, pending a decision.
 
+## Tests
+
+- `tests/run_offline_tests.sh`: 11 offline tests of the scan gate, against a local mock of the API.
+  Runs in CI as the `scanner-tests` job before any scan.
+- `tests/live_scan.sh`: live test against the real API (needs `VISION_ONE_API_KEY` and AWS read-only
+  access). Expects the compliant plan to exit 0 and the public-SSH plan to exit 1. It also fetches
+  the rule catalogue entry for `EC2-031`, the one allowlist entry not yet verified.
+
 ## Run locally
 
 ```bash
