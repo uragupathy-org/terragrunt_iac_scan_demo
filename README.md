@@ -99,9 +99,16 @@ the API's 9,000,000-character limit. The scanner prints the exact body before se
 ## 6. The scan result
 
 The API returns `scanResults`. Each result has a `status` (`SUCCESS` or `FAILURE`), a `riskLevel`
-(LOW, MEDIUM, HIGH, VERY_HIGH, EXTREME), a `ruleId`, a `resource` address, and a `ruleTitle`. The
-report lists every result with its status. The scanner counts a finding when `status` is `FAILURE` and
-`ignored` is false.
+(LOW, MEDIUM, HIGH, VERY_HIGH, EXTREME), a `ruleId`, a `resourceType` (for example `aws_instance`), and a
+`ruleTitle`. The scanner counts a finding when `status` is `FAILURE` and `ignored` is false.
+
+The report (`report.md`) shows:
+- A header with the counts: results returned, SUCCESS and FAILURE, findings, and the gate.
+- A findings table with only the FAILURE findings: Status, Severity, Rule, Resource type, Title.
+- A collapsible section with all results, SUCCESS and FAILURE, in the same columns.
+
+The console prints the header and the findings table. The full list is in the report file and the job
+summary.
 
 ## 7. Step-by-step: what the pipeline does
 
