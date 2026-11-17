@@ -22,9 +22,10 @@ tests/run_offline_tests.sh, tests/live_scan.sh                scanner tests (off
 
 ## 2. How the Terragrunt files become Terraform files
 
-Terragrunt is not Terraform. It reads the Terragrunt HCL files (`*.hcl`), resolves them, and writes
-plain Terraform files into a separate folder. Terraform then runs in that folder. Nothing Terragrunt
-does is written into the repo's `*.tf` files.
+Terragrunt is a wrapper around Terraform, not a replacement for it. It reads the Terragrunt configuration
+(`*.hcl`), resolves it, and writes ordinary Terraform files into a separate rendered folder, where
+Terraform runs. The repo's `*.tf` files are never modified, so the source you review stays exactly as
+written.
 
 The pieces, and what each one contributes:
 
