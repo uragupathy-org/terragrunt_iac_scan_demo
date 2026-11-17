@@ -35,6 +35,46 @@ The pieces, and what each one contributes:
 | `live/.../ec2-web/terragrunt.hcl` | `include`, `terraform.source`, `inputs` | Points at the root config and the product, and sets this environment's `inputs` (name, subnet, VPC, tags), with defaults read from `defaults.hcl`. |
 | `products/web-tier/*.tf` | Terraform | The resources (security group, instance, AMI lookup) and their variables. |
 
+## 2a. AWS resources created
+
+A successful apply of this unit creates **two AWS resources**. Both come from the flat product's
+`main.tf`. The plan (`plan.json`) shows them as `create`.
+
+| Terraform address | AWS resource | What it is | Key settings for this unit |
+|-------------------|--------------|------------|----------------------------|
+| `aws_security_group.this` | EC2 security group | Firewall for the instance, in the default VPC `vpc-03984c3d845fe2475` | Name prefix `client-demo-dev-web-`. Inline egress: all traffic to `0.0.0.0/0`. Inline ingress: **none** by default (see below). |
+| `aws_instance.this` | EC2 instance | The web server | `t3.micro`, in subnet `subnet-04730e7b4814e3a80` (ap-southeast-2a), attached to the security group above. Detailed monitoring on, EBS-optimized on. |
+
+The instance's root volume is created with the instance, not as a separate resource: a 20 GB `gp3`
+volume, encrypted, deleted on termination.
+
+Instance metadata is set to **IMDSv2 only** (`http_tokens = required`, hop limit 1).
+
+**Ingress is off by default.** The security group only gets an inbound rule when
+`allow_public_ingress = true` is set. Then it opens `ingress_port` (443 by default) to
+`ingress_cidr_blocks`. The default is an empty list, so nothing is open to the internet.
+
+**Read, not created:**
+
+- `data.aws_ami.selected` looks up the newest Amazon Linux 2023 AMI (`al2023-ami-2023.*-x86_64`). It
+  creates nothing.
+- The VPC and subnet are existing resources in the account. The unit only references them by ID.
+
+**Not created in AWS:**
+
+- **IAM role or instance profile:** none. The instance has no AWS permissions.
+- **Key pair:** none. There is no SSH key on the instance.
+- **Auto Scaling group, load balancer, or elastic IP:** none.
+- **State:** the `terraform.tfstate` file is on the machine that runs Terraform, not in AWS. This is the
+  local backend described in section 11.
+
+The plan's resource list at the time of writing:
+
+```
+aws_instance.this           create
+aws_security_group.this     create
+```
+
 ## 3. Step-by-step: what `render_and_plan.sh` does
 
 `scripts/render_and_plan.sh live/client-demo/dev/ap-southeast-2/ec2-web` produces a self-contained
