@@ -97,8 +97,8 @@ check "wrong key is an API error" 2 "$RC" "$OUT" "HTTP 401"
 start_mock resp-public.json test-key
 scan status_report -- --plan-json "$FIX/dummy-plan.json" --fail-on MEDIUM
 check "report shows status counts" 1 "$RC" "$WORK/status_report/report.md" "status SUCCESS: 1, FAILURE: 7"
-check "findings table uses resource type" 1 "$RC" "$WORK/status_report/report.md" "| FAILURE | MEDIUM | EC2-002 | aws_security_group |"
-check "report lists SUCCESS results in details" 1 "$RC" "$WORK/status_report/report.md" "| SUCCESS | LOW | EC2-099 | aws_instance |"
+check "findings table uses resource type" 1 "$RC" "$WORK/status_report/report.md" "| MEDIUM | EC2-002 | aws_security_group | Unrestricted SSH Access | FAILURE |"
+check "report lists SUCCESS results in details" 1 "$RC" "$WORK/status_report/report.md" "| LOW | EC2-099 | aws_instance | Passing rule | SUCCESS |"
 check "report has collapsible all-results section" 1 "$RC" "$WORK/status_report/report.md" "<details>"
 
 # 12. Missing plan file -> usage error.
