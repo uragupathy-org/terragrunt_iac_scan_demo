@@ -1,7 +1,7 @@
 name: IaC scan (Terragrunt flat product + Vision One)
 
 on:
-  pull_request:
+  push:
     paths:
       - "live/**"
       - "products/**"
