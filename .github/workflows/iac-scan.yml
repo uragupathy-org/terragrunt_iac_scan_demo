@@ -1,0 +1,98 @@
+name: IaC scan (Terragrunt + Vision One)
+
+on:
+  pull_request:
+    paths:
+      - "live/**"
+      - "products/**"
+      - "modules/**"
+      - "scanner/**"
+      - ".github/workflows/iac-scan.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-southeast-2
+  AWS_ROLE_ARN: arn:aws:iam::834797984653:role/github-terragrunt-plan-readonly
+  TERRAFORM_VERSION: "1.12.1"
+  TERRAGRUNT_VERSION: "1.2.1"
+  VISION_ONE_BASE_URL: https://api.au.xdr.trendmicro.com
+  SCAN_THRESHOLD: HIGH
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      units: ${{ steps.find.outputs.units }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        run: |
+          units=$(find live -name terragrunt.hcl -not -path '*/.terragrunt-cache/*' \
+            | xargs -n1 dirname | sort | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "units=$units" >> "$GITHUB_OUTPUT"
+          echo "Units: $units"
+
+  plan-and-scan:
+    needs: discover
+    if: needs.discover.outputs.units != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        unit: ${{ fromJson(needs.discover.outputs.units) }}
+    permissions:
+      id-token: write   # OIDC to AWS
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: |
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TERRAGRUNT_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+          terragrunt --version
+
+      - name: Render plan (Terragrunt)
+        id: plan
+        working-directory: ${{ matrix.unit }}
+        env:
+          TG_NON_INTERACTIVE: "true"
+        run: |
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock=false -out=tfplan
+          terragrunt show -json tfplan > "$RUNNER_TEMP/plan.json"
+          # Keep the plan out of the artifact store; only the report is kept.
+          echo "plan_json=$RUNNER_TEMP/plan.json" >> "$GITHUB_OUTPUT"
+
+      - name: Scan rendered plan with Vision One
+        env:
+          VISION_ONE_API_KEY: ${{ secrets.VISION_ONE_API_KEY }}
+        run: |
+          chmod +x scanner/scan_plan.sh
+          scanner/scan_plan.sh \
+            --plan-json "$RUNNER_TEMP/plan.json" \
+            --out-dir "$RUNNER_TEMP/scan-report" \
+            --threshold "$SCAN_THRESHOLD"
+
+      - name: Upload scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-report-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/scan-report/
+          retention-days: 7
+          if-no-files-found: ignore

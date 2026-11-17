@@ -1,0 +1,9 @@
+.terraform/
+.terragrunt-cache/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+plan.json
+scan-output/
+.env
