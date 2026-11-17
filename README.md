@@ -147,8 +147,9 @@ scanner/scan_plan.sh --plan-json rendered/live/client-demo/dev/ap-southeast-2/ec
 
 ## 9. Tests
 
-- `tests/run_offline_tests.sh`: 16 offline tests of the scanner, against a local mock of the API. No key
-  or AWS needed. CI runs them first.
+- `tests/run_offline_tests.sh`: 17 offline tests of the scanner, against a local mock of the API. No key
+  or AWS needed. Each test prints the scanner's full output (payload, findings, gate). Use `--quiet`
+  for PASS/FAIL only.
 - `tests/live_scan.sh`: against the real API, with `VISION_ONE_API_KEY` and AWS read-only access. It
   renders the unit, makes a public-SSH plan for comparison, and checks the gate results.
 
