@@ -60,8 +60,10 @@ check "public SSH fails at MEDIUM" 1 "$RC" "$WORK/p1/report.md" "EC2-002"
 run_scan "$WORK/p2" --plan-json "$FIX/dummy-plan.json" --threshold HIGH --allowlist "$ALLOW"
 check "public SSH passes at HIGH (gate level matters)" 0 "$RC" "" ""
 
-# 5. Archive mode uses the same gate.
-run_scan "$WORK/p3" --archive "$FIX/dummy-archive.zip" --threshold MEDIUM --allowlist "$ALLOW"
+# 5. Archive mode uses the same gate. The archive is built here (*.zip is not committed).
+printf 'resource "aws_instance" "x" {}\n' > "$WORK/dummy.tf"
+(cd "$WORK" && zip -q dummy-archive.zip dummy.tf)
+run_scan "$WORK/p3" --archive "$WORK/dummy-archive.zip" --threshold MEDIUM --allowlist "$ALLOW"
 check "archive mode: public SSH fails at MEDIUM" 1 "$RC" "$WORK/p3/report.md" "EC2-002"
 
 # 6. Unaccepted HIGH finding -> fails at MEDIUM.
