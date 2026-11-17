@@ -120,13 +120,9 @@ GATED="$(echo "$FINDINGS_JSON" | jq --arg g "$FAIL_ON" '
   echo "- Gate (fail on this severity or higher): \`$FAIL_ON\`"
   echo "- Findings at or above gate: $GATED"
   echo ""
-  if (( FAILED > 0 )); then
-    echo "| Status | Severity | Rule | Resource | Title |"
-    echo "|--------|----------|------|----------|-------|"
-    echo "$FINDINGS_JSON" | jq -r '.[] | "| \(.status) | \(.riskLevel // "-") | \(.ruleId) | \(.resource) | \(.ruleTitle) |"'
-  else
-    echo "No findings."
-  fi
+  echo "| Status | Severity | Rule | Resource | Title |"
+  echo "|--------|----------|------|----------|-------|"
+  jq -r '.scanResults[] | "| \(.status) | \(.riskLevel // "-") | \(.ruleId) | \(.resource) | \(.ruleTitle) |"' "$RESPONSE"
 } > "$REPORT"
 
 echo "=== Step 1: findings"

@@ -98,6 +98,7 @@ start_mock resp-public.json test-key
 scan status_report -- --plan-json "$FIX/dummy-plan.json" --fail-on MEDIUM
 check "report shows status counts" 1 "$RC" "$WORK/status_report/report.md" "status SUCCESS: 1, FAILURE: 7"
 check "report table has Status column" 1 "$RC" "$WORK/status_report/report.md" "| FAILURE | MEDIUM | EC2-002"
+check "report lists SUCCESS results too" 1 "$RC" "$WORK/status_report/report.md" "| SUCCESS | LOW | EC2-099"
 
 # 12. Missing plan file -> usage error.
 scan missing -- --plan-json "$WORK/nope.json"
