@@ -12,7 +12,7 @@
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
         },
         "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:uragupathy-trend/terragrunt_iac_scan_demo:*"
+          "token.actions.githubusercontent.com:sub": "repo:uragupathy-org@320367889/terragrunt_iac_scan_demo@1461166536:*"
         }
       }
     }
