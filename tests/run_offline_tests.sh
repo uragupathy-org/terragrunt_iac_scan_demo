@@ -93,6 +93,12 @@ start_mock resp-compliant.json test-key
 KEY=wrong-key scan badkey -- --plan-json "$FIX/dummy-plan.json"
 check "wrong key is an API error" 2 "$RC" "$OUT" "HTTP 401"
 
+# 12a. Report carries the status field: summary counts and a Status column.
+start_mock resp-public.json test-key
+scan status_report -- --plan-json "$FIX/dummy-plan.json" --fail-on MEDIUM
+check "report shows status counts" 1 "$RC" "$WORK/status_report/report.md" "status SUCCESS: 1, FAILURE: 7"
+check "report table has Status column" 1 "$RC" "$WORK/status_report/report.md" "| FAILURE | MEDIUM | EC2-002"
+
 # 12. Missing plan file -> usage error.
 scan missing -- --plan-json "$WORK/nope.json"
 check "missing plan file is a usage error" 2 "$RC" "$OUT" "not found"

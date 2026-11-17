@@ -106,6 +106,8 @@ fi
 # Step 1: findings = FAILURE and not ignored.
 FINDINGS_JSON="$(jq '[.scanResults[] | select(.status == "FAILURE" and (.ignored | not))]' "$RESPONSE")"
 FAILED="$(echo "$FINDINGS_JSON" | jq 'length')"
+SUCCESS_N="$(jq '[.scanResults[] | select(.status == "SUCCESS")] | length' "$RESPONSE")"
+FAILURE_N="$(jq '[.scanResults[] | select(.status == "FAILURE")] | length' "$RESPONSE")"
 GATED="$(echo "$FINDINGS_JSON" | jq --arg g "$FAIL_ON" '
   def rank: {"LOW":1,"MEDIUM":2,"HIGH":3,"VERY_HIGH":4,"EXTREME":5}[.] // 0;
   [.[] | select(((.riskLevel // "") | rank) >= ($g | rank))] | length')"
@@ -113,15 +115,15 @@ GATED="$(echo "$FINDINGS_JSON" | jq --arg g "$FAIL_ON" '
 {
   echo "## Vision One Template Scan"
   echo ""
-  echo "- Results returned: $TOTAL"
-  echo "- Findings (not ignored): $FAILED"
+  echo "- Results returned: $TOTAL (status SUCCESS: $SUCCESS_N, FAILURE: $FAILURE_N)"
+  echo "- Findings (FAILURE, not ignored): $FAILED"
   echo "- Gate (fail on this severity or higher): \`$FAIL_ON\`"
   echo "- Findings at or above gate: $GATED"
   echo ""
   if (( FAILED > 0 )); then
-    echo "| Severity | Rule | Resource | Title |"
-    echo "|----------|------|----------|-------|"
-    echo "$FINDINGS_JSON" | jq -r '.[] | "| \(.riskLevel // "-") | \(.ruleId) | \(.resource) | \(.ruleTitle) |"'
+    echo "| Status | Severity | Rule | Resource | Title |"
+    echo "|--------|----------|------|----------|-------|"
+    echo "$FINDINGS_JSON" | jq -r '.[] | "| \(.status) | \(.riskLevel // "-") | \(.ruleId) | \(.resource) | \(.ruleTitle) |"'
   else
     echo "No findings."
   fi
