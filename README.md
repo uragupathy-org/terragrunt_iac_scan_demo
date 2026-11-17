@@ -144,7 +144,7 @@ The API returns `scanResults`. Each result has a `status` (`SUCCESS` or `FAILURE
 
 The report (`report.md`) shows:
 - A header with the counts: results returned, SUCCESS and FAILURE, findings, and the gate.
-- A findings table with only the FAILURE findings: Severity, Rule, Resource type, Title, Status.
+- A findings table with only the FAILURE findings: Rule, Title, Resource type, Severity, Status.
 - A collapsible section with all results, SUCCESS and FAILURE, in the same columns.
 
 The console prints the header and the findings table. The full list is in the report file and the job

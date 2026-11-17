@@ -115,13 +115,13 @@ GATED="$(echo "$FINDINGS_JSON" | jq --arg g "$FAIL_ON" '
 FINDINGS_TABLE="$(echo "$FINDINGS_JSON" | jq -r '
   if length == 0 then "No findings (FAILURE, not ignored)."
   else
-    "| Severity | Rule | Resource type | Title | Status |\n|----------|------|---------------|-------|--------|\n" +
-    (map("| \(.riskLevel // "-") | \(.ruleId) | \(.resourceType // "-") | \(.ruleTitle) | \(.status) |") | join("\n"))
+    "| Rule | Title | Resource type | Severity | Status |\n|------|-------|---------------|----------|--------|\n" +
+    (map("| \(.ruleId) | \(.ruleTitle) | \(.resourceType // "-") | \(.riskLevel // "-") | \(.status) |") | join("\n"))
   end')"
 
 ALL_TABLE="$(jq -r '
-  "| Severity | Rule | Resource type | Title | Status |\n|----------|------|---------------|-------|--------|\n" +
-  ([.scanResults[] | "| \(.riskLevel // "-") | \(.ruleId) | \(.resourceType // "-") | \(.ruleTitle) | \(.status) |"] | join("\n"))' "$RESPONSE")"
+  "| Rule | Title | Resource type | Severity | Status |\n|------|-------|---------------|----------|--------|\n" +
+  ([.scanResults[] | "| \(.ruleId) | \(.ruleTitle) | \(.resourceType // "-") | \(.riskLevel // "-") | \(.status) |"] | join("\n"))' "$RESPONSE")"
 
 HEADER="$(cat <<HDR
 ## Vision One Template Scan
