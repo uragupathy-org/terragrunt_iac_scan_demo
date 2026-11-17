@@ -22,7 +22,7 @@ permissions:
 
 env:
   AWS_REGION: ap-southeast-2
-  AWS_ROLE_ARN: arn:aws:iam::834797984653:role/github-terragrunt-plan-readonly
+  AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}   # repository variable, set in GitHub settings
   TERRAFORM_VERSION: "1.12.1"
   TERRAGRUNT_VERSION: "1.2.1"
   VISION_ONE_BASE_URL: https://api.au.xdr.trendmicro.com
@@ -39,6 +39,14 @@ jobs:
       FAIL_ON: ${{ inputs.fail_on || 'HIGH' }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check AWS role variable
+        run: |
+          if [ -z "$AWS_ROLE_ARN" ]; then
+            echo "Repository variable AWS_ROLE_ARN is not set. See README: Create the OIDC role."
+            exit 1
+          fi
+          echo "Using role: $AWS_ROLE_ARN"
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:

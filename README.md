@@ -153,12 +153,108 @@ scanner/scan_plan.sh --plan-json rendered/live/client-demo/dev/ap-southeast-2/ec
 - `tests/live_scan.sh`: against the real API, with `VISION_ONE_API_KEY` and AWS read-only access. It
   renders the unit, makes a public-SSH plan for comparison, and checks the gate results.
 
-## 10. GitHub setup
+## 10. GitHub setup and OIDC role
 
-- Secret: `VISION_ONE_API_KEY`.
-- OIDC plan role: `arn:aws:iam::834797984653:role/github-terragrunt-plan-readonly`. Its trust policy
-  must match the workflow's subject: `repo:uragupathy-org@320367889/terragrunt_iac_scan_demo@1461166536:*`
-  (see `github-trust-policy.json`).
+The workflow logs in to AWS with OpenID Connect (no stored AWS keys). Two things must exist in GitHub,
+and one role must exist in AWS.
+
+### 10.1 Repository settings
+
+| Type | Name | Value |
+|------|------|-------|
+| Variable | `AWS_ROLE_ARN` | ARN of the read-only plan role, for example `arn:aws:iam::834797984653:role/github-terragrunt-plan-readonly` |
+| Secret | `VISION_ONE_API_KEY` | Vision One API key with Cloud Risk Management view and configure permissions |
+
+Set them under **Settings > Secrets and variables > Actions** (variables tab for `AWS_ROLE_ARN`), or from
+the command line:
+
+```bash
+gh variable set AWS_ROLE_ARN --repo uragupathy-org/terragrunt_iac_scan_demo \
+  --body "arn:aws:iam::834797984653:role/github-terragrunt-plan-readonly"
+gh secret set VISION_ONE_API_KEY --repo uragupathy-org/terragrunt_iac_scan_demo
+```
+
+If `AWS_ROLE_ARN` is missing, the first step of the job fails with a message that points here.
+
+### 10.2 Create the OIDC role (one time, run by an IAM admin)
+
+The role's trust policy must match the subject GitHub puts in the token for this repository. The
+subject has the form:
+
+```
+repo:<owner>@<owner-id>/<repo>@<repo-id>:*
+```
+
+**a. Find the owner and repo IDs** (requires `gh auth login`):
+
+```bash
+gh api repos/uragupathy-org/terragrunt_iac_scan_demo --jq '{owner_id: .owner.id, repo_id: .id}'
+```
+
+For this repo the values are `owner_id: 320367889` and `repo_id: 1461166536`.
+
+**b. Write the trust policy.** `github-trust-policy.json` in this repo is already set to this subject.
+If you use a different repo, change the `sub` value to the form above:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::834797984653:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
+        "StringLike": { "token.actions.githubusercontent.com:sub": "repo:uragupathy-org@320367889/terragrunt_iac_scan_demo@1461166536:*" }
+      }
+    }
+  ]
+}
+```
+
+The IAM OIDC provider `token.actions.githubusercontent.com` must already exist in the account. It
+does for umatrenddemo (`834797984653`). If it doesn't, create it with
+`aws iam create-open-id-connect-provider --url https://token.actions.githubusercontent.com --client-id-list sts.amazonaws.com --thumbprint-list <thumbprint>`.
+
+**c. Create the role and attach a read-only policy.** The role only plans; it cannot change resources:
+
+```bash
+AWS_PROFILE=umatrenddemo aws iam create-role \
+  --role-name github-terragrunt-plan-readonly \
+  --description "Read-only role for Terragrunt plan in terragrunt_iac_scan_demo (GitHub Actions OIDC)" \
+  --assume-role-policy-document file://github-trust-policy.json
+
+AWS_PROFILE=umatrenddemo aws iam attach-role-policy \
+  --role-name github-terragrunt-plan-readonly \
+  --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess
+```
+
+To change the trust of an existing role, use `aws iam update-assume-role-policy` with the same file.
+
+**d. Check the trust policy:**
+
+```bash
+AWS_PROFILE=umatrenddemo aws iam get-role --role-name github-terragrunt-plan-readonly \
+  --query 'Role.AssumeRolePolicyDocument.Statement[0].Condition.StringLike'
+```
+
+The output must show the same `sub` as in the policy file.
+
+**e. Get the role ARN** and set it as the `AWS_ROLE_ARN` variable (section 10.1):
+
+```bash
+AWS_PROFILE=umatrenddemo aws iam get-role --role-name github-terragrunt-plan-readonly --query Role.Arn --output text
+```
+
+### 10.3 Troubleshooting
+
+- **`Not authorized to perform sts:AssumeRoleWithWebIdentity`:** the `sub` in the trust policy does not
+  match the token. Compare the subject from section 10.2 (owner and repo IDs, not names) with the trust
+  policy.
+- **`AWS_ROLE_ARN ... not set`:** add the repository variable (section 10.1).
 
 ## 11. Known limitations
 
