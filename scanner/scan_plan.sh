@@ -112,21 +112,49 @@ GATED="$(echo "$FINDINGS_JSON" | jq --arg g "$FAIL_ON" '
   def rank: {"LOW":1,"MEDIUM":2,"HIGH":3,"VERY_HIGH":4,"EXTREME":5}[.] // 0;
   [.[] | select(((.riskLevel // "") | rank) >= ($g | rank))] | length')"
 
+FINDINGS_TABLE="$(echo "$FINDINGS_JSON" | jq -r '
+  if length == 0 then "No findings (FAILURE, not ignored)."
+  else
+    "| Status | Severity | Rule | Resource type | Title |\n|--------|----------|------|---------------|-------|\n" +
+    (map("| \(.status) | \(.riskLevel // "-") | \(.ruleId) | \(.resourceType // "-") | \(.ruleTitle) |") | join("\n"))
+  end')"
+
+ALL_TABLE="$(jq -r '
+  "| Status | Severity | Rule | Resource type | Title |\n|--------|----------|------|---------------|-------|\n" +
+  ([.scanResults[] | "| \(.status) | \(.riskLevel // "-") | \(.ruleId) | \(.resourceType // "-") | \(.ruleTitle) |"] | join("\n"))' "$RESPONSE")"
+
+HEADER="$(cat <<HDR
+## Vision One Template Scan
+
+- Input: \`$(basename "$PLAN_JSON")\`
+- Results returned: $TOTAL (status SUCCESS: $SUCCESS_N, FAILURE: $FAILURE_N)
+- Findings (FAILURE, not ignored): $FAILED
+- Gate (fail on this severity or higher): \`$FAIL_ON\`
+- Findings at or above gate: $GATED
+HDR
+)"
+
 {
-  echo "## Vision One Template Scan"
+  echo "$HEADER"
   echo ""
-  echo "- Results returned: $TOTAL (status SUCCESS: $SUCCESS_N, FAILURE: $FAILURE_N)"
-  echo "- Findings (FAILURE, not ignored): $FAILED"
-  echo "- Gate (fail on this severity or higher): \`$FAIL_ON\`"
-  echo "- Findings at or above gate: $GATED"
+  echo "### Findings (FAILURE): $FAILED"
   echo ""
-  echo "| Status | Severity | Rule | Resource | Title |"
-  echo "|--------|----------|------|----------|-------|"
-  jq -r '.scanResults[] | "| \(.status) | \(.riskLevel // "-") | \(.ruleId) | \(.resource) | \(.ruleTitle) |"' "$RESPONSE"
+  echo "$FINDINGS_TABLE"
+  echo ""
+  echo "<details>"
+  echo "<summary>All $TOTAL results (SUCCESS and FAILURE)</summary>"
+  echo ""
+  echo "$ALL_TABLE"
+  echo ""
+  echo "</details>"
 } > "$REPORT"
 
 echo "=== Step 1: findings"
-cat "$REPORT"
+echo "$HEADER"
+echo ""
+echo "$FINDINGS_TABLE"
+echo ""
+echo "Full list of $TOTAL results: $REPORT"
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"; fi
 
 # Step 2: fail on findings at or above the gate.
