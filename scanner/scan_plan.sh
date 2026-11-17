@@ -1,112 +1,95 @@
 #!/usr/bin/env bash
-# Scan generated Terraform with the Trend Vision One Cloud Risk Management
-# Template Scanner. Two input modes:
+# Send a Terraform plan (JSON) to the Trend Vision One Cloud Risk Management
+# Template Scanner, print the payload and the findings, and fail on severity.
 #
-#   --plan-json FILE   rendered plan (terraform show -json)
-#                      POST /beta/cloudPosture/scanTemplate  (type: terraform-template)
-#   --archive FILE     ZIP of rendered HCL (single root module)
-#                      POST /beta/cloudPosture/scanTemplateArchive (type: terraform-archive)
+#   POST https://<region>/beta/cloudPosture/scanTemplate
+#   body: {"type": "terraform-template", "content": "<plan.json as a string>"}
 #
 # Usage:
-#   scan_plan.sh (--plan-json FILE | --archive FILE) --out-dir DIR
-#                [--threshold MEDIUM] [--allowlist FILE] [--dry-run]
+#   scanner/scan_plan.sh --plan-json FILE --out-dir DIR [--fail-on SEVERITY] [--dry-run]
+#
+# Severity (LOW, MEDIUM, HIGH, VERY_HIGH, EXTREME). Precedence: --fail-on, then
+# the FAIL_ON environment variable, then HIGH.
 #
 # Env:
 #   VISION_ONE_API_KEY   required unless --dry-run
 #   VISION_ONE_BASE_URL  default https://api.au.xdr.trendmicro.com
+#   FAIL_ON              default severity gate if --fail-on is not given
 #
-# Allowlist: findings matching ruleId + resource are accepted, listed in the
-# report with their reason, and do not count toward the gate.
-#
-# Exit codes: 0 = pass, 1 = unaccepted findings at/above threshold,
-#             2 = usage, API, or allowlist error (including zero results).
+# Exit codes: 0 = no findings at/above the gate, 1 = findings at/above the gate,
+#             2 = usage or API error (including zero results).
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLAN_JSON=""
-ARCHIVE=""
 OUT_DIR=""
-THRESHOLD="MEDIUM"
-ALLOWLIST="$SCRIPT_DIR/allowlist.json"
+FAIL_ON_ARG=""
 DRY_RUN="false"
 BASE_URL="${VISION_ONE_BASE_URL:-https://api.au.xdr.trendmicro.com}"
-MAX_CHARS=9000000   # API limit on "content" for scanTemplate.
+MAX_CHARS=9000000   # API limit on "content".
 
 usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --plan-json) PLAN_JSON="$2"; shift 2 ;;
-    --archive)   ARCHIVE="$2"; shift 2 ;;
     --out-dir)   OUT_DIR="$2"; shift 2 ;;
-    --threshold) THRESHOLD="$(echo "$2" | tr '[:lower:]' '[:upper:]')"; shift 2 ;;
-    --allowlist) ALLOWLIST="$2"; shift 2 ;;
+    --fail-on)   FAIL_ON_ARG="$2"; shift 2 ;;
     --dry-run)   DRY_RUN="true"; shift ;;
     -h|--help)   usage ;;
     *) echo "Unknown argument: $1" >&2; usage ;;
   esac
 done
 
-if [[ -n "$PLAN_JSON" && -n "$ARCHIVE" ]] || [[ -z "$PLAN_JSON" && -z "$ARCHIVE" ]]; then
-  echo "Specify exactly one of --plan-json or --archive" >&2; exit 2
-fi
+[[ -n "$PLAN_JSON" ]] || { echo "--plan-json is required" >&2; exit 2; }
+[[ -f "$PLAN_JSON" ]] || { echo "Plan file not found: $PLAN_JSON" >&2; exit 2; }
 [[ -n "$OUT_DIR" ]] || { echo "--out-dir is required" >&2; exit 2; }
 
-INPUT="${PLAN_JSON:-$ARCHIVE}"
-[[ -f "$INPUT" ]] || { echo "Input file not found: $INPUT" >&2; exit 2; }
-
+# Severity gate: CLI beats environment beats default.
+FAIL_ON="$(echo "${FAIL_ON_ARG:-${FAIL_ON:-HIGH}}" | tr '[:lower:]' '[:upper:]')"
 rank() {
   case "$1" in
     LOW) echo 1 ;; MEDIUM) echo 2 ;; HIGH) echo 3 ;; VERY_HIGH) echo 4 ;; EXTREME) echo 5 ;;
     *) echo 0 ;;
   esac
 }
-THRESHOLD_RANK="$(rank "$THRESHOLD")"
-[[ "$THRESHOLD_RANK" -gt 0 ]] || { echo "--threshold must be LOW|MEDIUM|HIGH|VERY_HIGH|EXTREME" >&2; exit 2; }
-
-[[ -f "$ALLOWLIST" ]] || { echo "Allowlist not found: $ALLOWLIST" >&2; exit 2; }
-jq -e 'type == "array" and all(.[]; (.ruleId|type=="string") and (.resource|type=="string") and ((.reason // "")|length > 0))' \
-  "$ALLOWLIST" >/dev/null || { echo "Allowlist must be an array of {ruleId, resource, reason} with a non-empty reason" >&2; exit 2; }
+GATE_RANK="$(rank "$FAIL_ON")"
+[[ "$GATE_RANK" -gt 0 ]] || { echo "Invalid severity '$FAIL_ON': use LOW, MEDIUM, HIGH, VERY_HIGH or EXTREME" >&2; exit 2; }
 
 mkdir -p "$OUT_DIR"
+REQUEST="$OUT_DIR/request.json"
 RESPONSE="$OUT_DIR/response.json"
-FINDINGS="$OUT_DIR/findings.json"
-REPORT_MD="$OUT_DIR/report.md"
+REPORT="$OUT_DIR/report.md"
 
-if [[ -n "$PLAN_JSON" ]]; then
-  REQUEST="$OUT_DIR/request.json"
-  jq -n --rawfile content "$PLAN_JSON" '{type: "terraform-template", content: $content}' > "$REQUEST"
-  SIZE="$(jq -r '.content | length' "$REQUEST")"
-  if (( SIZE > MAX_CHARS )); then
-    echo "Plan content is $SIZE chars; API limit is $MAX_CHARS. Split the unit." >&2
-    exit 2
-  fi
-  SIZE_DESC="$SIZE chars"
-else
-  SIZE_DESC="$(wc -c < "$ARCHIVE" | tr -d ' ') bytes"
+# Step 0: build the exact request body and print it.
+jq -n --rawfile content "$PLAN_JSON" '{type: "terraform-template", content: $content}' > "$REQUEST"
+SIZE="$(jq -r '.content | length' "$REQUEST")"
+if (( SIZE > MAX_CHARS )); then
+  echo "Plan content is $SIZE chars; API limit is $MAX_CHARS." >&2
+  exit 2
 fi
 
+echo "=== Step 0: payload sent to Vision One"
+echo "POST $BASE_URL/beta/cloudPosture/scanTemplate"
+echo "Authorization: Bearer <redacted>"
+echo "Content-Type: application/json;charset=utf-8"
+echo "Body ($(wc -c < "$REQUEST" | tr -d ' ') bytes, content = $SIZE chars):"
+cat "$REQUEST"
+echo ""
+echo ""
+
 if [[ "$DRY_RUN" == "true" ]]; then
-  echo "[dry-run] input $INPUT ($SIZE_DESC) prepared; API not called."
+  echo "[dry-run] payload built; API not called. Gate: $FAIL_ON"
   exit 0
 fi
 
 [[ -n "${VISION_ONE_API_KEY:-}" ]] || { echo "VISION_ONE_API_KEY is not set" >&2; exit 2; }
 
-if [[ -n "$PLAN_JSON" ]]; then
-  HTTP_CODE="$(curl -sS -o "$RESPONSE" -w '%{http_code}' \
-    -X POST "$BASE_URL/beta/cloudPosture/scanTemplate" \
-    -H "Authorization: Bearer $VISION_ONE_API_KEY" \
-    -H "Content-Type: application/json;charset=utf-8" \
-    --data-binary "@$REQUEST")"
-else
-  HTTP_CODE="$(curl -sS -o "$RESPONSE" -w '%{http_code}' \
-    -X POST "$BASE_URL/beta/cloudPosture/scanTemplateArchive" \
-    -H "Authorization: Bearer $VISION_ONE_API_KEY" \
-    -F "type=terraform-archive" \
-    -F "file=@$ARCHIVE;type=application/zip")"
-fi
+HTTP_CODE="$(curl -sS -o "$RESPONSE" -w '%{http_code}' \
+  -X POST "$BASE_URL/beta/cloudPosture/scanTemplate" \
+  -H "Authorization: Bearer $VISION_ONE_API_KEY" \
+  -H "Content-Type: application/json;charset=utf-8" \
+  --data-binary "@$REQUEST")"
 
 if [[ "$HTTP_CODE" != "200" ]]; then
   echo "Template Scanner API returned HTTP $HTTP_CODE" >&2
@@ -115,59 +98,43 @@ if [[ "$HTTP_CODE" != "200" ]]; then
 fi
 
 TOTAL="$(jq '.scanResults | length' "$RESPONSE")"
-
-# Failing results (FAILURE and not ignored), each with its allowlist entry if accepted.
-jq --slurpfile allow "$ALLOWLIST" '
-  ($allow[0]) as $a
-  | [ .scanResults[]
-      | select(.status == "FAILURE" and (.ignored | not))
-      | . as $f
-      | ([$a[] | select(.ruleId == $f.ruleId and .resource == $f.resource)] | .[0]) as $acc
-      | $f + {accepted: $acc} ]' "$RESPONSE" > "$FINDINGS"
-
-FAILED="$(jq 'length' "$FINDINGS")"
-ACCEPTED="$(jq '[.[] | select(.accepted != null)] | length' "$FINDINGS")"
-BLOCKING="$(jq --arg t "$THRESHOLD" '
-  def rank: {"LOW":1,"MEDIUM":2,"HIGH":3,"VERY_HIGH":4,"EXTREME":5}[.] // 0;
-  [ .[] | select(.accepted == null and (((.riskLevel // "") | rank) >= ($t | rank))) ] | length' "$FINDINGS")"
-
-{
-  echo "## Vision One Template Scan ($(basename "$INPUT"))"
-  echo ""
-  echo "- Input: \`$(basename "$INPUT")\` ($SIZE_DESC)"
-  echo "- Results returned: $TOTAL"
-  echo "- Failing (not ignored): $FAILED"
-  echo "- Accepted by allowlist: $ACCEPTED"
-  echo "- Blocking at threshold \`$THRESHOLD\`: $BLOCKING"
-  echo ""
-  if (( FAILED > 0 )); then
-    echo "| Risk | Rule | Resource | Title | Status |"
-    echo "|------|------|----------|-------|--------|"
-    jq -r '.[] | "| \(.riskLevel // "-") | \(.ruleId) | \(.resource) | \(.ruleTitle) | \(if .accepted then "accepted" else "BLOCKING candidate" end) |"' "$FINDINGS"
-    if (( ACCEPTED > 0 )); then
-      echo ""
-      echo "Accepted findings and reasons:"
-      jq -r '.[] | select(.accepted != null) | "- \(.ruleId) on \(.resource): \(.accepted.reason)"' "$FINDINGS"
-    fi
-  else
-    echo "No failing results."
-  fi
-} > "$REPORT_MD"
-
-cat "$REPORT_MD"
-if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-  cat "$REPORT_MD" >> "$GITHUB_STEP_SUMMARY"
-fi
-
-# Zero results means nothing was evaluated; never report that as a pass.
 if (( TOTAL == 0 )); then
-  echo "ERROR: API returned 0 scan results; the input was not evaluated." >&2
+  echo "ERROR: API returned 0 scan results; the plan was not evaluated." >&2
   exit 2
 fi
 
-if (( BLOCKING > 0 )); then
-  echo "FAIL: $BLOCKING unaccepted finding(s) at or above $THRESHOLD."
+# Step 1: findings = FAILURE and not ignored.
+FINDINGS_JSON="$(jq '[.scanResults[] | select(.status == "FAILURE" and (.ignored | not))]' "$RESPONSE")"
+FAILED="$(echo "$FINDINGS_JSON" | jq 'length')"
+GATED="$(echo "$FINDINGS_JSON" | jq --arg g "$FAIL_ON" '
+  def rank: {"LOW":1,"MEDIUM":2,"HIGH":3,"VERY_HIGH":4,"EXTREME":5}[.] // 0;
+  [.[] | select(((.riskLevel // "") | rank) >= ($g | rank))] | length')"
+
+{
+  echo "## Vision One Template Scan"
+  echo ""
+  echo "- Results returned: $TOTAL"
+  echo "- Findings (not ignored): $FAILED"
+  echo "- Gate (fail on this severity or higher): \`$FAIL_ON\`"
+  echo "- Findings at or above gate: $GATED"
+  echo ""
+  if (( FAILED > 0 )); then
+    echo "| Severity | Rule | Resource | Title |"
+    echo "|----------|------|----------|-------|"
+    echo "$FINDINGS_JSON" | jq -r '.[] | "| \(.riskLevel // "-") | \(.ruleId) | \(.resource) | \(.ruleTitle) |"'
+  else
+    echo "No findings."
+  fi
+} > "$REPORT"
+
+echo "=== Step 1: findings"
+cat "$REPORT"
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"; fi
+
+# Step 2: fail on findings at or above the gate.
+if (( GATED > 0 )); then
+  echo "=== Step 2: FAIL. $GATED finding(s) at or above $FAIL_ON."
   exit 1
 fi
-echo "PASS: no unaccepted findings at or above $THRESHOLD."
+echo "=== Step 2: PASS. No findings at or above $FAIL_ON."
 exit 0

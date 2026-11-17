@@ -1,4 +1,4 @@
-name: IaC scan (Terragrunt + Vision One)
+name: IaC scan (Terragrunt flat product + Vision One)
 
 on:
   pull_request:
@@ -6,8 +6,16 @@ on:
       - "live/**"
       - "products/**"
       - "scanner/**"
+      - "scripts/**"
+      - "tests/**"
       - ".github/workflows/iac-scan.yml"
   workflow_dispatch:
+    inputs:
+      fail_on:
+        description: "Fail the pipeline on findings at or above this severity"
+        type: choice
+        options: [LOW, MEDIUM, HIGH, VERY_HIGH, EXTREME]
+        default: HIGH
 
 permissions:
   contents: read
@@ -18,11 +26,11 @@ env:
   TERRAFORM_VERSION: "1.12.1"
   TERRAGRUNT_VERSION: "1.2.1"
   VISION_ONE_BASE_URL: https://api.au.xdr.trendmicro.com
-  SCAN_THRESHOLD: MEDIUM
+  UNIT: live/client-demo/dev/ap-southeast-2/ec2-web
 
 jobs:
   scanner-tests:
-    # Offline tests of the scanner gate (no secrets, no AWS). Must pass before scanning.
+    # Offline tests of the scanner (no secrets, no AWS). Must pass before the scan.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,30 +39,15 @@ jobs:
           chmod +x tests/run_offline_tests.sh scanner/scan_plan.sh
           tests/run_offline_tests.sh
 
-  discover:
-    runs-on: ubuntu-latest
-    outputs:
-      units: ${{ steps.find.outputs.units }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: find
-        run: |
-          units=$(find live -name terragrunt.hcl -not -path '*/.terragrunt-cache/*' \
-            | xargs -n1 dirname | sort | jq -R -s -c 'split("\n") | map(select(length > 0))')
-          echo "units=$units" >> "$GITHUB_OUTPUT"
-          echo "Units: $units"
-
   plan-and-scan:
-    needs: [discover, scanner-tests]
-    if: needs.discover.outputs.units != '[]'
+    needs: scanner-tests
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        unit: ${{ fromJson(needs.discover.outputs.units) }}
     permissions:
-      id-token: write   # OIDC to AWS
+      id-token: write   # OIDC to AWS (read-only plan role)
       contents: read
+    env:
+      # Gate severity: input when run manually, HIGH otherwise.
+      FAIL_ON: ${{ inputs.fail_on || 'HIGH' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -73,40 +66,26 @@ jobs:
           curl -fsSL -o /usr/local/bin/terragrunt \
             "https://github.com/gruntwork-io/terragrunt/releases/download/v${TERRAGRUNT_VERSION}/terragrunt_linux_amd64"
           chmod +x /usr/local/bin/terragrunt
-          terragrunt --version
 
-      - name: Render Terragrunt unit to Terraform and plan
+      - name: Render Terragrunt unit and plan
         run: |
           chmod +x scripts/render_and_plan.sh
-          scripts/render_and_plan.sh "${{ matrix.unit }}" "$RUNNER_TEMP/rendered"
-          echo "RENDERED_DIR=$RUNNER_TEMP/rendered/${{ matrix.unit }}" >> "$GITHUB_ENV"
+          scripts/render_and_plan.sh "$UNIT" "$RUNNER_TEMP/rendered"
+          echo "PLAN_JSON=$RUNNER_TEMP/rendered/$UNIT/plan.json" >> "$GITHUB_ENV"
 
-      - name: Scan rendered plan (JSON) with Vision One
+      - name: Scan plan with Vision One (payload, findings, gate)
         env:
           VISION_ONE_API_KEY: ${{ secrets.VISION_ONE_API_KEY }}
         run: |
-          chmod +x scanner/scan_plan.sh
-          scanner/scan_plan.sh \
-            --plan-json "$RENDERED_DIR/plan.json" \
-            --out-dir "$RUNNER_TEMP/scan/plan" \
-            --threshold "$SCAN_THRESHOLD"
+          scanner/scan_plan.sh --plan-json "$PLAN_JSON" \
+            --out-dir "$RUNNER_TEMP/scan" --fail-on "$FAIL_ON"
 
-      - name: Scan rendered HCL (archive) with Vision One
-        if: always()
-        env:
-          VISION_ONE_API_KEY: ${{ secrets.VISION_ONE_API_KEY }}
-        run: |
-          scanner/scan_plan.sh \
-            --archive "$RENDERED_DIR/rendered-tf.zip" \
-            --out-dir "$RUNNER_TEMP/scan/archive" \
-            --threshold "$SCAN_THRESHOLD"
-
-      - name: Upload scan reports
+      - name: Upload scan report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          # Reports only. Plan JSON and tfplan are never uploaded.
-          name: scan-reports-${{ strategy.job-index }}
+          # Report only. The plan JSON and tfplan are never uploaded.
+          name: scan-report
           path: ${{ runner.temp }}/scan/
           retention-days: 7
           if-no-files-found: ignore

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Live test against the real Vision One API. Needs AWS (read-only plan) and VISION_ONE_API_KEY.
 #   AWS_PROFILE=umatrenddemo VISION_ONE_API_KEY=... tests/live_scan.sh
-# Expected: compliant plan exits 0 (after allowlist), public-SSH plan exits 1.
+# Expected:
+#   compliant plan, default gate HIGH  -> exit 0
+#   public-SSH plan, default gate HIGH -> exit 0 (SSH finding is MEDIUM)
+#   public-SSH plan, gate MEDIUM       -> exit 1 (SSH finding blocks)
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -9,7 +12,6 @@ ROOT="$(cd "$HERE/.." && pwd)"
 UNIT=live/client-demo/dev/ap-southeast-2/ec2-web
 R="$ROOT/rendered/$UNIT"
 OUT="$ROOT/scan-output/live-test"
-BASE_URL="${VISION_ONE_BASE_URL:-https://api.au.xdr.trendmicro.com}"
 
 [[ -n "${VISION_ONE_API_KEY:-}" ]] || { echo "Set VISION_ONE_API_KEY first" >&2; exit 2; }
 export TG_NON_INTERACTIVE=true
@@ -26,20 +28,19 @@ terraform -chdir="$R" plan -input=false -lock=false -no-color \
   -out=tfplan-public >"$OUT/plan-public.log" 2>&1 || { echo "public plan failed; see $OUT/plan-public.log"; exit 2; }
 terraform -chdir="$R" show -json tfplan-public > "$OUT/plan-public.json"
 
-echo "== 3. Verify the allowlisted rule EC2-031 against the rule catalogue"
-curl -sS -H "Authorization: Bearer $VISION_ONE_API_KEY" "$BASE_URL/beta/cloudPosture/terraformTemplateScannerRules" \
-  > "$OUT/rules.json"
-jq '[.. | objects | select(.ruleId? == "EC2-031")] | .[0] // "EC2-031 not found in rule catalogue"' "$OUT/rules.json" | tee "$OUT/ec2-031.txt"
+echo "== 3. Scan compliant plan, gate HIGH (expect exit 0)"
+scanner/scan_plan.sh --plan-json "$OUT/plan-compliant.json" --out-dir "$OUT/compliant" --fail-on HIGH >"$OUT/compliant.log" 2>&1
+RC1=$?; tail -2 "$OUT/compliant.log"
 
-echo "== 4. Scan compliant plan (expect exit 0)"
-scanner/scan_plan.sh --plan-json "$OUT/plan-compliant.json" --out-dir "$OUT/compliant" --threshold MEDIUM
-RC_COMPLIANT=$?
+echo "== 4. Scan public-SSH plan, gate HIGH (expect exit 0: SSH is MEDIUM)"
+scanner/scan_plan.sh --plan-json "$OUT/plan-public.json" --out-dir "$OUT/public-high" --fail-on HIGH >"$OUT/public-high.log" 2>&1
+RC2=$?; tail -2 "$OUT/public-high.log"
 
-echo "== 5. Scan public-SSH plan (expect exit 1)"
-scanner/scan_plan.sh --plan-json "$OUT/plan-public.json" --out-dir "$OUT/public" --threshold MEDIUM
-RC_PUBLIC=$?
+echo "== 5. Scan public-SSH plan, gate MEDIUM (expect exit 1: SSH blocks)"
+scanner/scan_plan.sh --plan-json "$OUT/plan-public.json" --out-dir "$OUT/public-medium" --fail-on MEDIUM >"$OUT/public-medium.log" 2>&1
+RC3=$?; tail -2 "$OUT/public-medium.log"
 
 echo ""
-echo "compliant exit=$RC_COMPLIANT (expect 0)   public exit=$RC_PUBLIC (expect 1)"
-if [[ $RC_COMPLIANT -eq 0 && $RC_PUBLIC -eq 1 ]]; then echo "LIVE TEST: PASS"; exit 0; fi
+echo "compliant@HIGH=$RC1 (want 0)  public@HIGH=$RC2 (want 0)  public@MEDIUM=$RC3 (want 1)"
+if [[ $RC1 -eq 0 && $RC2 -eq 0 && $RC3 -eq 1 ]]; then echo "LIVE TEST: PASS"; exit 0; fi
 echo "LIVE TEST: FAIL"; exit 1
